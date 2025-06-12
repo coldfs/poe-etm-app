@@ -45,8 +45,8 @@ func main() {
 
 	// Проверяем настройки Telegram
 	if config.TelegramBotToken == "YOUR_BOT_TOKEN" || config.TelegramChatID == "YOUR_CHAT_ID" {
-		fmt.Println("⚠️ Предупреждение: не заданы настройки Telegram в config.ini")
-		fmt.Println("Уведомления в Telegram не будут отправляться.")
+		logToUI("⚠️ Предупреждение: не заданы настройки Telegram в config.ini")
+		logToUI("Уведомления в Telegram не будут отправляться.")
 	}
 
 	var poePath string
@@ -54,31 +54,46 @@ func main() {
 	// Проверяем указан ли путь в конфигурации
 	if config.CustomPoEPath != "" {
 		poePath = config.CustomPoEPath
-		fmt.Printf("Используется указанный в config.ini путь: %s\n", poePath)
+		logToUI("Используется указанный в config.ini путь: " + poePath)
 	} else {
 		// Автоматический поиск директории
 		poePath, err = findPathOfExileDirectory()
 		if err != nil {
-			fmt.Printf("Ошибка при поиске директории Path of Exile: %v\n", err)
-			fmt.Println("Пожалуйста, укажите путь к директории Path of Exile вручную:")
+			logToUI("Ошибка при поиске директории Path of Exile: " + err.Error())
+			logToUI("Пожалуйста, укажите путь к директории Path of Exile вручную в config.ini")
 
-			reader := bufio.NewReader(os.Stdin)
-			poePath, _ = reader.ReadString('\n')
-			poePath = strings.TrimSpace(poePath)
+			if runtime.GOOS != "windows" {
+				// В консольном режиме запрашиваем путь
+				fmt.Println("Пожалуйста, укажите путь к директории Path of Exile вручную:")
+				reader := bufio.NewReader(os.Stdin)
+				poePath, _ = reader.ReadString('\n')
+				poePath = strings.TrimSpace(poePath)
 
-			if poePath == "" {
-				fmt.Println("Путь не указан. Выход.")
-				return
+				if poePath == "" {
+					fmt.Println("Путь не указан. Выход.")
+					return
+				}
+			} else {
+				// Для Windows с трей-иконкой, просто ждем пока пользователь обновит config.ini
+				for {
+					time.Sleep(5 * time.Second)
+					err := loadConfig()
+					if err == nil && config.CustomPoEPath != "" {
+						poePath = config.CustomPoEPath
+						logToUI("Загружен новый путь из config.ini: " + poePath)
+						break
+					}
+				}
 			}
 		}
 	}
 
-	clientLogFilePath := filepath.Join(poePath, "Client.txt")
-	fmt.Printf("Найден файл лога Path of Exile: %s\n", clientLogFilePath)
+	clientLogFilePath := filepath.Join(poePath, "logs", "Client.txt")
+	logToUI("Найден файл лога Path of Exile: " + clientLogFilePath)
 
 	err = monitorFile(clientLogFilePath)
 	if err != nil {
-		fmt.Printf("Ошибка при мониторинге файла: %v\n", err)
+		logToUI("Ошибка при мониторинге файла: " + err.Error())
 	}
 }
 
@@ -103,6 +118,13 @@ func loadConfig() error {
 
 	pollInterval := cfg.Section("Settings").Key("PollInterval").MustInt(1)
 	config.PollInterval = time.Duration(pollInterval) * time.Second
+
+	// Отладочный вывод
+	fmt.Printf("Загруженные настройки:\n")
+	fmt.Printf("TelegramBotToken: %s\n", config.TelegramBotToken)
+	fmt.Printf("TelegramChatID: %s\n", config.TelegramChatID)
+	fmt.Printf("CustomPoEPath: %s\n", config.CustomPoEPath)
+	fmt.Printf("PollInterval: %v\n", config.PollInterval)
 
 	return nil
 }
@@ -151,7 +173,8 @@ func sendTelegramMessage(message string) error {
 	// Экранируем сообщение для URL
 	escapedMessage := url.QueryEscape(message)
 
-	resp, err := http.Get(telegramAPI + "?chat_id=" + config.TelegramChatID + "&text=" + escapedMessage)
+	// Добавляем параметр parse_mode=HTML для поддержки форматирования
+	resp, err := http.Get(telegramAPI + "?chat_id=" + config.TelegramChatID + "&text=" + escapedMessage + "&parse_mode=HTML")
 	if err != nil {
 		return fmt.Errorf("ошибка при отправке сообщения в Telegram: %w", err)
 	}
@@ -180,8 +203,8 @@ func monitorFile(filePath string) error {
 
 	reader := bufio.NewReader(file)
 
-	fmt.Println("Мониторинг файла... (Ctrl+C для выхода)")
-	fmt.Println("Отслеживание сообщений о покупке и отправка в Telegram...")
+	logToUI("Мониторинг файла... (Ctrl+C для выхода)")
+	logToUI("Отслеживание сообщений о покупке и отправка в Telegram...")
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -196,19 +219,52 @@ func monitorFile(filePath string) error {
 
 		// Обрезаем пробельные символы в конце строки
 		line = strings.TrimRight(line, "\r\n")
-		fmt.Println(line)
+
+		// Выводим все сообщения в лог
+		logToUI(line)
 
 		// Проверяем, соответствует ли сообщение шаблону покупки
-		if buyMessageRegex.MatchString(line) {
-			fmt.Println("Найдено сообщение о покупке!")
+		if strings.Contains(line, "I would like to buy your") && strings.Contains(line, "@From") {
+			// Регулярное выражение для поиска цены, валюты и названия предмета
+			match := regexp.MustCompile(`I would like to buy your (.*?) listed for ([\d.]+ (chaos|divine))`).FindStringSubmatch(line)
+			if len(match) > 0 {
+				itemName := strings.TrimSpace(match[1])
+				price := strings.TrimSpace(match[2])
 
-			// Отправляем уведомление в Telegram
-			err := sendTelegramMessage("Новое сообщение о покупке: " + line)
-			if err != nil {
-				fmt.Printf("Ошибка отправки в Telegram: %v\n", err)
+				// Определяем эмодзи в зависимости от валюты
+				emoji := "💰" // по умолчанию
+				if strings.Contains(price, "divine") {
+					emoji = "💎" // для divine
+				} else if strings.Contains(price, "chaos") {
+					emoji = "🪙" // для chaos
+				}
+
+				// Форматируем сообщение с HTML-разметкой для жирного шрифта цены
+				message := fmt.Sprintf("%s <b>%s</b> %s", emoji, price, itemName)
+				logToUI("Найдено сообщение о покупке: " + message)
+
+				// Отправляем уведомление в Telegram с поддержкой HTML
+				err := sendTelegramMessage(message)
+				if err != nil {
+					logToUI("Ошибка отправки в Telegram: " + err.Error())
+				} else {
+					logToUI("Сообщение успешно отправлено в Telegram")
+				}
 			} else {
-				fmt.Println("Сообщение успешно отправлено в Telegram")
+				logToUI("Сообщение не соответствует шаблону: " + line)
 			}
 		}
 	}
+}
+
+// logToUI выводит сообщение в лог (консоль или UI)
+func logToUI(message string) {
+	// Выводим в консоль в любом случае
+	fmt.Println(message)
+
+	// Если запущен в Windows с UI, отправляем в окно
+	// if runtime.GOOS == "windows" {
+	// 	// В файле tray_windows.go определена функция AddLogMessage
+	// 	AddLogMessage(message)
+	// }
 }
