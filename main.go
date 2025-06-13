@@ -224,12 +224,18 @@ func monitorFile(filePath string) error {
 		logToUI(line)
 
 		// Проверяем, соответствует ли сообщение шаблону покупки
-		if strings.Contains(line, "I would like to buy your") && strings.Contains(line, "@From") {
+		if (strings.Contains(line, "I would like to buy your") || strings.Contains(line, "хочу купить у вас")) && (strings.Contains(line, "@From") || strings.Contains(line, "@От")) {
 			// Регулярное выражение для поиска цены, валюты и названия предмета
-			match := regexp.MustCompile(`I would like to buy your (.*?) listed for ([\d.]+ (chaos|divine))`).FindStringSubmatch(line)
+			// Поддерживает оба языка: английский и русский
+			match := regexp.MustCompile(`(?:.*?)(?:I would like to buy your|хочу купить у вас) (.*?) (?:listed for|за) ([\d.]+ (chaos|divine|mirror))(?:.*)`).FindStringSubmatch(line)
 			if len(match) > 0 {
 				itemName := strings.TrimSpace(match[1])
 				price := strings.TrimSpace(match[2])
+
+				// Отладочный вывод
+				logToUI("Debug - Найдены совпадения:")
+				logToUI(fmt.Sprintf("Debug - Предмет: %s", itemName))
+				logToUI(fmt.Sprintf("Debug - Цена: %s", price))
 
 				// Определяем эмодзи в зависимости от валюты
 				emoji := "💰" // по умолчанию
@@ -237,6 +243,8 @@ func monitorFile(filePath string) error {
 					emoji = "💎" // для divine
 				} else if strings.Contains(price, "chaos") {
 					emoji = "🪙" // для chaos
+				} else if strings.Contains(price, "mirror") {
+					emoji = "✨" // для mirror
 				}
 
 				// Форматируем сообщение с HTML-разметкой для жирного шрифта цены
