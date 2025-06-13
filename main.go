@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,11 +24,12 @@ type Config struct {
 	TelegramChatID   string
 	CustomPoEPath    string
 	PollInterval     time.Duration
+	ETMURL           string
+	ETMToken         string
 }
 
 var (
-	buyMessageRegex = regexp.MustCompile(`From .+: .+buy.+`)
-	config          Config
+	config Config
 )
 
 func main() {
@@ -116,6 +119,11 @@ func loadConfig() error {
 	config.TelegramChatID = cfg.Section("Telegram").Key("ChatID").String()
 	config.CustomPoEPath = cfg.Section("PathOfExile").Key("CustomPath").String()
 
+	// Загружаем настройки API с подробным логированием
+	apiSection := cfg.Section("API")
+	config.ETMURL = apiSection.Key("ETM_URL").String()
+	config.ETMToken = apiSection.Key("ETM_TOKEN").String()
+
 	pollInterval := cfg.Section("Settings").Key("PollInterval").MustInt(1)
 	config.PollInterval = time.Duration(pollInterval) * time.Second
 
@@ -124,6 +132,8 @@ func loadConfig() error {
 	fmt.Printf("TelegramBotToken: %s\n", config.TelegramBotToken)
 	fmt.Printf("TelegramChatID: %s\n", config.TelegramChatID)
 	fmt.Printf("CustomPoEPath: %s\n", config.CustomPoEPath)
+	fmt.Printf("ETM_URL: %s\n", config.ETMURL)
+	fmt.Printf("ETM_TOKEN: %s\n", config.ETMToken)
 	fmt.Printf("PollInterval: %v\n", config.PollInterval)
 
 	return nil
@@ -143,6 +153,11 @@ func createDefaultConfig() error {
 	poeSection, _ := cfg.NewSection("PathOfExile")
 	poeSection.NewKey("CustomPath", "")
 
+	// Секция API
+	apiSection, _ := cfg.NewSection("API")
+	apiSection.NewKey("ETM_URL", "")
+	apiSection.NewKey("ETM_TOKEN", "")
+
 	// Секция Settings
 	settingsSection, _ := cfg.NewSection("Settings")
 	settingsSection.NewKey("PollInterval", "1")
@@ -156,6 +171,8 @@ func createDefaultConfig() error {
 	config.TelegramBotToken = "YOUR_BOT_TOKEN"
 	config.TelegramChatID = "YOUR_CHAT_ID"
 	config.CustomPoEPath = ""
+	config.ETMURL = "https://etm-bot-server-b74b2ca681a6.herokuapp.com"
+	config.ETMToken = ""
 	config.PollInterval = 1 * time.Second
 
 	return nil
@@ -165,25 +182,97 @@ func createDefaultConfig() error {
 func sendTelegramMessage(message string) error {
 	// Проверяем, указаны ли настройки Telegram
 	if config.TelegramBotToken == "YOUR_BOT_TOKEN" || config.TelegramChatID == "YOUR_CHAT_ID" {
+		logToUI("Debug - Telegram не настроен: BotToken или ChatID не заданы в config.ini")
 		return fmt.Errorf("не указаны настройки Telegram")
 	}
 
 	telegramAPI := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", config.TelegramBotToken)
-
-	// Экранируем сообщение для URL
 	escapedMessage := url.QueryEscape(message)
+	fullURL := telegramAPI + "?chat_id=" + config.TelegramChatID + "&text=" + escapedMessage + "&parse_mode=MarkdownV2"
 
-	// Добавляем параметр parse_mode=MarkdownV2 для поддержки Markdown
-	resp, err := http.Get(telegramAPI + "?chat_id=" + config.TelegramChatID + "&text=" + escapedMessage + "&parse_mode=MarkdownV2")
+	logToUI("Debug - Отправка запроса в Telegram")
+	logToUI("Debug - URL: " + fullURL)
+
+	resp, err := http.Get(fullURL)
 	if err != nil {
+		logToUI("Debug - Ошибка при отправке запроса в Telegram: " + err.Error())
 		return fmt.Errorf("ошибка при отправке сообщения в Telegram: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Читаем тело ответа для отладки
+	body, _ := io.ReadAll(resp.Body)
+	logToUI(fmt.Sprintf("Debug - Ответ Telegram (код %d): %s", resp.StatusCode, string(body)))
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ошибка API Telegram, код ответа: %d", resp.StatusCode)
 	}
 
+	return nil
+}
+
+// sendMessageViaAPI отправляет сообщение через API
+func sendMessageViaAPI(message string) error {
+	if config.ETMURL == "" || config.ETMToken == "" {
+		logToUI("Debug - API не настроен: ETM_URL или ETM_TOKEN не заданы в config.ini")
+		return fmt.Errorf("не заданы настройки API в config.ini")
+	}
+
+	// Формируем JSON для отправки
+	jsonData := map[string]string{
+		"token":   config.ETMToken,
+		"message": message,
+	}
+	jsonBytes, err := json.Marshal(jsonData)
+	if err != nil {
+		logToUI("Debug - Ошибка при формировании JSON: " + err.Error())
+		return fmt.Errorf("ошибка при формировании JSON: %w", err)
+	}
+
+	apiURL := config.ETMURL + "/message"
+	logToUI("Debug - Отправка POST запроса на " + apiURL)
+	logToUI("Debug - Тело запроса: " + string(jsonBytes))
+
+	// Отправляем POST запрос
+	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		logToUI("Debug - Ошибка при отправке POST запроса: " + err.Error())
+		return fmt.Errorf("ошибка при отправке POST запроса: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Читаем тело ответа для отладки
+	body, _ := io.ReadAll(resp.Body)
+	logToUI(fmt.Sprintf("Debug - Ответ сервера (код %d): %s", resp.StatusCode, string(body)))
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ошибка API, код ответа: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// sendMessage отправляет сообщение через доступные каналы
+func sendMessage(message string) error {
+	logToUI("Debug - Попытка отправки сообщения: " + message)
+
+	// Пробуем отправить через API, если заданы переменные окружения
+	logToUI("Debug - Пробуем отправить через API...")
+	err := sendMessageViaAPI(message)
+	if err == nil {
+		logToUI("Debug - Сообщение успешно отправлено через API")
+		return nil
+	}
+	logToUI("Debug - Не удалось отправить через API: " + err.Error())
+
+	// Если API недоступен, пробуем отправить через Telegram
+	logToUI("Debug - Пробуем отправить через Telegram...")
+	err = sendTelegramMessage(message)
+	if err != nil {
+		logToUI("Debug - Не удалось отправить через Telegram: " + err.Error())
+		return err
+	}
+	logToUI("Debug - Сообщение успешно отправлено через Telegram")
 	return nil
 }
 
@@ -246,12 +335,12 @@ func monitorFile(filePath string) error {
 				message := fmt.Sprintf("%s *%s* %s", emoji, price, itemName)
 				logToUI("Найдено сообщение о покупке: " + message)
 
-				// Отправляем уведомление в Telegram с поддержкой Markdown
-				err := sendTelegramMessage(message)
+				// Отправляем уведомление через доступные каналы
+				err := sendMessage(message)
 				if err != nil {
-					logToUI("Ошибка отправки в Telegram: " + err.Error())
+					logToUI("Ошибка отправки сообщения: " + err.Error())
 				} else {
-					logToUI("Сообщение успешно отправлено в Telegram")
+					logToUI("Сообщение успешно отправлено")
 				}
 			} else {
 				logToUI("Сообщение не соответствует шаблону: " + line)
