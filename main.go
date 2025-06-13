@@ -173,8 +173,8 @@ func sendTelegramMessage(message string) error {
 	// Экранируем сообщение для URL
 	escapedMessage := url.QueryEscape(message)
 
-	// Добавляем параметр parse_mode=HTML для поддержки форматирования
-	resp, err := http.Get(telegramAPI + "?chat_id=" + config.TelegramChatID + "&text=" + escapedMessage + "&parse_mode=HTML")
+	// Добавляем параметр parse_mode=MarkdownV2 для поддержки Markdown
+	resp, err := http.Get(telegramAPI + "?chat_id=" + config.TelegramChatID + "&text=" + escapedMessage + "&parse_mode=MarkdownV2")
 	if err != nil {
 		return fmt.Errorf("ошибка при отправке сообщения в Telegram: %w", err)
 	}
@@ -232,11 +232,6 @@ func monitorFile(filePath string) error {
 				itemName := strings.TrimSpace(match[1])
 				price := strings.TrimSpace(match[2])
 
-				// Отладочный вывод
-				logToUI("Debug - Найдены совпадения:")
-				logToUI(fmt.Sprintf("Debug - Предмет: %s", itemName))
-				logToUI(fmt.Sprintf("Debug - Цена: %s", price))
-
 				// Определяем эмодзи в зависимости от валюты
 				emoji := "💰" // по умолчанию
 				if strings.Contains(price, "divine") {
@@ -244,14 +239,14 @@ func monitorFile(filePath string) error {
 				} else if strings.Contains(price, "chaos") {
 					emoji = "🪙" // для chaos
 				} else if strings.Contains(price, "mirror") {
-					emoji = "✨" // для mirror
+					emoji = "🪞" // для mirror
 				}
 
-				// Форматируем сообщение с HTML-разметкой для жирного шрифта цены
-				message := fmt.Sprintf("%s <b>%s</b> %s", emoji, price, itemName)
+				// Форматируем сообщение с Markdown-разметкой для жирного шрифта цены
+				message := fmt.Sprintf("%s *%s* %s", emoji, price, itemName)
 				logToUI("Найдено сообщение о покупке: " + message)
 
-				// Отправляем уведомление в Telegram с поддержкой HTML
+				// Отправляем уведомление в Telegram с поддержкой Markdown
 				err := sendTelegramMessage(message)
 				if err != nil {
 					logToUI("Ошибка отправки в Telegram: " + err.Error())
