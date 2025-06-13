@@ -1,3 +1,4 @@
+# Every Trade Matters (ETM)
 # Path of Exile Trade Notifier
 
 Приложение для отслеживания сообщений о покупке в игре Path of Exile и отправки уведомлений через Telegram.
@@ -26,6 +27,8 @@ ETM_TOKEN = xxx
 2. Замените `ETM_TOKEN` на токен вашего Telegram бота (получите у [@poe_etm_bot](https://t.me/poe_etm_bot))
 
 Токен можно получить перейдя в бота https://t.me/poe_etm_bot и отправим ему команду /start
+
+При жедании можно поднять собственный сервер для бота https://github.com/coldfs/etm-server
 
 
 ## Через своего бота
