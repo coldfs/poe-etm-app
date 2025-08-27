@@ -23,6 +23,7 @@ type Config struct {
 	TelegramBotToken string
 	TelegramChatID   string
 	CustomPoEPath    string
+	CustomPoE2Path   string
 	PollInterval     time.Duration
 	ETMURL           string
 	ETMToken         string
@@ -52,51 +53,86 @@ func main() {
 		logToUI("Уведомления в Telegram не будут отправляться.")
 	}
 
-	var poePath string
+	var pathsToMonitor []string
 
-	// Проверяем указан ли путь в конфигурации
+	// Если указаны пользовательские пути, используем их
 	if config.CustomPoEPath != "" {
-		poePath = config.CustomPoEPath
-		logToUI("Используется указанный в config.ini путь: " + poePath)
-	} else {
-		// Автоматический поиск директории
-		poePath, err = findPathOfExileDirectory()
-		if err != nil {
-			logToUI("Ошибка при поиске директории Path of Exile: " + err.Error())
+		clientLogPath := filepath.Join(config.CustomPoEPath, "logs", "Client.txt")
+		if _, err := os.Stat(clientLogPath); err == nil {
+			pathsToMonitor = append(pathsToMonitor, clientLogPath)
+			logToUI("Используется указанный в config.ini путь PoE 1: " + config.CustomPoEPath)
+		} else {
+			logToUI("Предупреждение: не найден Client.txt по пути PoE 1: " + config.CustomPoEPath)
+		}
+	}
+
+	if config.CustomPoE2Path != "" {
+		clientLogPath := filepath.Join(config.CustomPoE2Path, "logs", "Client.txt")
+		if _, err := os.Stat(clientLogPath); err == nil {
+			pathsToMonitor = append(pathsToMonitor, clientLogPath)
+			logToUI("Используется указанный в config.ini путь PoE 2: " + config.CustomPoE2Path)
+		} else {
+			logToUI("Предупреждение: не найден Client.txt по пути PoE 2: " + config.CustomPoE2Path)
+		}
+	}
+
+	// Если пути не указаны, ищем автоматически
+	if len(pathsToMonitor) == 0 {
+		logToUI("Автоматический поиск директорий Path of Exile...")
+		poePaths, poe2Paths := findAllPathOfExileDirectories()
+		
+		// Добавляем пути PoE 1
+		for _, path := range poePaths {
+			clientLogPath := filepath.Join(path, "logs", "Client.txt")
+			if _, err := os.Stat(clientLogPath); err == nil {
+				pathsToMonitor = append(pathsToMonitor, clientLogPath)
+				logToUI("Найден Path of Exile: " + path)
+			}
+		}
+		
+		// Добавляем пути PoE 2
+		for _, path := range poe2Paths {
+			clientLogPath := filepath.Join(path, "logs", "Client.txt")
+			if _, err := os.Stat(clientLogPath); err == nil {
+				pathsToMonitor = append(pathsToMonitor, clientLogPath)
+				logToUI("Найден Path of Exile 2: " + path)
+			}
+		}
+		
+		if len(pathsToMonitor) == 0 {
+			logToUI("Ошибка: не найдено ни одной установленной версии Path of Exile")
 			logToUI("Пожалуйста, укажите путь к директории Path of Exile вручную в config.ini")
-
-			if runtime.GOOS != "windows" {
-				// В консольном режиме запрашиваем путь
-				fmt.Println("Пожалуйста, укажите путь к директории Path of Exile вручную:")
-				reader := bufio.NewReader(os.Stdin)
-				poePath, _ = reader.ReadString('\n')
-				poePath = strings.TrimSpace(poePath)
-
-				if poePath == "" {
-					fmt.Println("Путь не указан. Выход.")
+			
+			// Ждем пока пользователь обновит config.ini
+			for {
+				time.Sleep(5 * time.Second)
+				err := loadConfig()
+				if err == nil && (config.CustomPoEPath != "" || config.CustomPoE2Path != "") {
+					logToUI("Загружены новые пути из config.ini")
+					main() // Рекурсивно вызываем main для переинициализации
 					return
-				}
-			} else {
-				// Для Windows с трей-иконкой, просто ждем пока пользователь обновит config.ini
-				for {
-					time.Sleep(5 * time.Second)
-					err := loadConfig()
-					if err == nil && config.CustomPoEPath != "" {
-						poePath = config.CustomPoEPath
-						logToUI("Загружен новый путь из config.ini: " + poePath)
-						break
-					}
 				}
 			}
 		}
 	}
 
-	clientLogFilePath := filepath.Join(poePath, "logs", "Client.txt")
-	logToUI("Найден файл лога Path of Exile: " + clientLogFilePath)
-
-	err = monitorFile(clientLogFilePath)
-	if err != nil {
-		logToUI("Ошибка при мониторинге файла: " + err.Error())
+	// Запускаем мониторинг всех найденных файлов
+	logToUI(fmt.Sprintf("Начинаем мониторинг %d файл(ов) Client.txt", len(pathsToMonitor)))
+	
+	errChan := make(chan error)
+	for _, path := range pathsToMonitor {
+		go func(p string) {
+			logToUI("Мониторинг: " + p)
+			err := monitorFile(p)
+			if err != nil {
+				errChan <- fmt.Errorf("ошибка мониторинга %s: %w", p, err)
+			}
+		}(path)
+	}
+	
+	// Ожидаем ошибок (программа будет работать бесконечно, если все в порядке)
+	for err := range errChan {
+		logToUI(err.Error())
 	}
 }
 
@@ -118,6 +154,7 @@ func loadConfig() error {
 	config.TelegramBotToken = cfg.Section("Telegram").Key("BotToken").String()
 	config.TelegramChatID = cfg.Section("Telegram").Key("ChatID").String()
 	config.CustomPoEPath = cfg.Section("PathOfExile").Key("CustomPath").String()
+	config.CustomPoE2Path = cfg.Section("PathOfExile2").Key("CustomPath").String()
 
 	// Загружаем настройки API с подробным логированием
 	apiSection := cfg.Section("API")
@@ -152,6 +189,10 @@ func createDefaultConfig() error {
 	// Секция PathOfExile
 	poeSection, _ := cfg.NewSection("PathOfExile")
 	poeSection.NewKey("CustomPath", "")
+	
+	// Секция PathOfExile2
+	poe2Section, _ := cfg.NewSection("PathOfExile2")
+	poe2Section.NewKey("CustomPath", "")
 
 	// Секция API
 	apiSection, _ := cfg.NewSection("API")
@@ -171,6 +212,7 @@ func createDefaultConfig() error {
 	config.TelegramBotToken = "YOUR_BOT_TOKEN"
 	config.TelegramChatID = "YOUR_CHAT_ID"
 	config.CustomPoEPath = ""
+	config.CustomPoE2Path = ""
 	config.ETMURL = "https://etm-bot-server-b74b2ca681a6.herokuapp.com"
 	config.ETMToken = ""
 	config.PollInterval = 1 * time.Second
@@ -278,6 +320,11 @@ func sendMessage(message string) error {
 
 // monitorFile открывает файл и выводит новые строки.
 func monitorFile(filePath string) error {
+	// Определяем из какой игры лог
+	gameVersion := "PoE"
+	if strings.Contains(filePath, "Path of Exile 2") {
+		gameVersion = "PoE 2"
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("не удалось открыть файл %s: %w", filePath, err)
@@ -292,8 +339,8 @@ func monitorFile(filePath string) error {
 
 	reader := bufio.NewReader(file)
 
-	logToUI("Мониторинг файла... (Ctrl+C для выхода)")
-	logToUI("Отслеживание сообщений о покупке и отправка в Telegram...")
+	logToUI(fmt.Sprintf("[%s] Мониторинг файла... (Ctrl+C для выхода)", gameVersion))
+	logToUI(fmt.Sprintf("[%s] Отслеживание сообщений о покупке и отправка в Telegram...", gameVersion))
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -309,14 +356,14 @@ func monitorFile(filePath string) error {
 		// Обрезаем пробельные символы в конце строки
 		line = strings.TrimRight(line, "\r\n")
 
-		// Выводим все сообщения в лог
-		logToUI(line)
+		// Выводим все сообщения в лог с префиксом игры
+		logToUI(fmt.Sprintf("[%s] %s", gameVersion, line))
 
 		// Проверяем, соответствует ли сообщение шаблону покупки
 		if (strings.Contains(line, "I would like to buy your") || strings.Contains(line, "хочу купить у вас")) && (strings.Contains(line, "@From") || strings.Contains(line, "@От")) {
 			// Регулярное выражение для поиска цены, валюты и названия предмета
 			// Поддерживает оба языка: английский и русский
-			match := regexp.MustCompile(`(?:.*?)(?:I would like to buy your|хочу купить у вас) (.*?) (?:listed for|за) ([\d.]+ (chaos|divine|mirror))(?:.*)`).FindStringSubmatch(line)
+			match := regexp.MustCompile(`(?:.*?)(?:I would like to buy your|хочу купить у вас) (.*?) (?:listed for|за) ([\d.]+ (chaos|divine|mirror|exalted))(?:.*)`).FindStringSubmatch(line)
 			if len(match) > 0 {
 				itemName := strings.TrimSpace(match[1])
 				price := strings.TrimSpace(match[2])
@@ -329,21 +376,23 @@ func monitorFile(filePath string) error {
 					emoji = "🪙" // для chaos
 				} else if strings.Contains(price, "mirror") {
 					emoji = "🪞" // для mirror
+				} else if strings.Contains(price, "exalted") {
+					emoji = "✨" // для exalted
 				}
 
 				// Форматируем сообщение с Markdown-разметкой для жирного шрифта цены
 				message := fmt.Sprintf("%s *%s* %s", emoji, price, itemName)
-				logToUI("Найдено сообщение о покупке: " + message)
+				logToUI(fmt.Sprintf("[%s] Найдено сообщение о покупке: %s", gameVersion, message))
 
 				// Отправляем уведомление через доступные каналы
 				err := sendMessage(message)
 				if err != nil {
-					logToUI("Ошибка отправки сообщения: " + err.Error())
+					logToUI(fmt.Sprintf("[%s] Ошибка отправки сообщения: %s", gameVersion, err.Error()))
 				} else {
-					logToUI("Сообщение успешно отправлено")
+					logToUI(fmt.Sprintf("[%s] Сообщение успешно отправлено", gameVersion))
 				}
 			} else {
-				logToUI("Сообщение не соответствует шаблону: " + line)
+				logToUI(fmt.Sprintf("[%s] Сообщение не соответствует шаблону: %s", gameVersion, line))
 			}
 		}
 	}
